@@ -29,7 +29,7 @@ class PyRunner(QtWidgets.QMainWindow):
         # self.directory.setCurrent('/')
 
         self.filemodel = QtWidgets.QFileSystemModel()
-        self.filemodel.setNameFilters(['*.py'])
+        self.filemodel.setNameFilters(['*.py', '*.pickle'])
 
         self.ui.fileViewer.setModel(self.filemodel)
 
@@ -44,6 +44,7 @@ class PyRunner(QtWidgets.QMainWindow):
 
         self.interpreter = Interpreter()
         self.interpreter.silentImport('os')
+        self.interpreter.silentImport('pickle')
 
         self.ui.cmdWindow.appendPlainText(self.interpreter.startinfo)
 
@@ -55,6 +56,13 @@ class PyRunner(QtWidgets.QMainWindow):
         head.setSectionResizeMode(QtWidgets.QHeaderView.Stretch)
         self.ui.varViewer.setHorizontalHeader(head)
         self.ui.varViewer.setHorizontalHeaderLabels(['Name', 'Value', 'Type'])
+
+        self.varActions = {
+            'Save': self.saveVar,
+            'Delete': self.delVar
+        }
+        # saveVar = QtWidgets.QAction('Save', self)
+        # self.ui.varViewer.insertAction(QtWidgets.QAction(), saveVar)
         
         self.updateFromDir()
 
@@ -78,6 +86,8 @@ class PyRunner(QtWidgets.QMainWindow):
         self.ui.fileViewer.doubleClicked.connect(self.dblClickFcn)
         self.ui.currentFolder.editingFinished.connect(self.lineEditChanged)
 
+        self.ui.varViewer.customContextMenuRequested.connect(self.varContextMenuFcn)
+        # remember what the callback was so it can be manually called
         self.keyFunction_builtin = self.ui.cmdWindow.keyPressEvent
         self.ui.cmdWindow.keyPressEvent = self.keyFilter
 
@@ -114,6 +124,26 @@ class PyRunner(QtWidgets.QMainWindow):
         clickedFile = self.filemodel.fileInfo(index.siblingAtColumn(0))
         if clickedFile.isDir():
             self._cdFolder(clickedFile.filePath())
+
+    def saveVar(self, varname):
+        self.interpreter.command("f = open('{}.pickle', 'wb')".format(varname))
+        self.interpreter.command("_pickle.dump({}, f)".format(varname))
+        self.interpreter.command("f.close(); del f")
+
+    def delVar(self, varname):
+        self.interpreter.command("del {}".format(varname))
+        self.updateLocals()
+
+    def varContextMenuFcn(self, point):
+        item = self.ui.varViewer.itemAt(point)
+        if item is not None:
+            menu = QtWidgets.QMenu(self)
+            for name in list(self.varActions):
+                menu.addAction(name)
+            action = menu.exec_(self.ui.varViewer.viewport().mapToGlobal(point))
+            if action is not None:
+                fcn = self.varActions[action.text()]
+                fcn(self.ui.varViewer.item(item.row(), 0).text())
 
     def lineEditChanged(self):
         trialFolder = QtCore.QFileInfo(self.ui.currentFolder.text())
