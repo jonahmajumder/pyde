@@ -40,12 +40,11 @@ class Interpreter():
         info = {}
         info['name'] = varname
         info['value'] = self.command('print(repr({}))'.format(varname))
-        info['type'] = self.command('{}.__class__.__name__'.format(varname))
+        info['type'] = self.command('print({}.__class__.__name__)'.format(varname))
         return info
 
     def variables(self):
         resp = self.command('dir()')
-        print(resp)
         varnames = [var for var in eval(resp) if not var.startswith('_')]
         dicts = [self.vardict(var) for var in varnames]
         return dicts

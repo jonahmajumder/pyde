@@ -127,7 +127,6 @@ class PyRunner(QtWidgets.QMainWindow):
             self.ui.fileViewer.resizeColumnToContents(i)
 
     def updateFromDir(self):
-        print(self.directory.path())
         self.filemodel.setRootPath(self.directory.path())
         self.ui.fileViewer.setRootIndex(self.filemodel.index(self.directory.path()))
         self.ui.currentFolder.setText(self.filemodel.rootPath())
@@ -156,7 +155,9 @@ class PyRunner(QtWidgets.QMainWindow):
         self.ui.varViewer.setRowCount(len(vardicts))
         for i, v in enumerate(vardicts):
             for j, elem in enumerate([v['name'], v['value'], v['type']]):
-                self.ui.varViewer.setItem(i, j, QtWidgets.QTableWidgetItem(elem))
+                item = QtWidgets.QTableWidgetItem(elem)
+                # item.setFlags(QtCore.Qt.ItemIsSelectable)
+                self.ui.varViewer.setItem(i, j, item)
         self.ui.varViewer.sortItems(0)
 
     def checkDir(self):
