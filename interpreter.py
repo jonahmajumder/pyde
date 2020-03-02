@@ -25,6 +25,10 @@ class Interpreter():
 
         self.silentImport('os')
         self.silentImport('pickle')
+        self.silentImport('sys')
+
+        # this works as long as we're in this dir...
+        self.silentImport('helpers')
 
     def exitFcn(self):
         sys.exit()
@@ -42,11 +46,14 @@ class Interpreter():
     def getHistoryCommand(self):
         return self.history[self.histIndex]
 
-    def command(self, text, log=True):
-        return self._command(text, log)
+    def command(self, text, **kwargs):
+        log = kwargs.get('log', True)
+        resp = self._command(text, log=log)
+        return resp
 
-    def _command(self, text, log=False):
-
+    def _command(self, text, **kwargs):
+        log = kwargs.get('log', False)
+        checkerr = kwargs.get('checkerror', False)
 
         self.process.sendline(text)
 
@@ -61,6 +68,8 @@ class Interpreter():
             self.process.expect(self.PROMPT_RE)
             response = self.process.before.decode().strip()
             self.nextprompt = self.process.after.decode()
+            if checkerr:
+                print(self.checkError())
             return response
         except pexpect.exceptions.EOF:
             self.exitFcn()
@@ -69,13 +78,17 @@ class Interpreter():
         commandstring = 'import {0} as _{0}'.format(module)
         self._command(commandstring)
 
+    def checkError(self):
+        resp = self._command('_helpers.checkError()', checkerror=False)
+        return eval(resp)
+
     def promptIsNew(self):
         return self.nextprompt == self.PROMPT
 
     def vardict(self, varname):
         info = {}
         info['name'] = varname
-        info['value'] = self._command('print(repr({}))'.format(varname))
+        info['value'] = self._command('print({})'.format(varname))
         info['type'] = self._command('print({}.__class__.__name__)'.format(varname))
         return info
 
@@ -146,6 +159,10 @@ class Interpreter():
 
     def delVar(self, varname):
         self._command("del {}".format(varname))
+
+    def delAllVars(self, _):
+        for name in self.varnames(False):
+            self.delVar(name)
 
     def readFile(self, relpath):
         abspath = os.path.join(self.workingDir(), relpath)

@@ -27,11 +27,11 @@ class StatusGetter(QtCore.QObject):
     def work(self):
         # print('Thread doing work.')
         vardicts = self.interpreter.variables()
-        wd = self.interpreter.workingDir()        
+        wd = self.interpreter.workingDir()
 
         results = {
             'vardicts': vardicts,
-            'wd': wd
+            'wd': wd,
         }
         self.doneSignal.emit(results)
 
@@ -93,7 +93,8 @@ class PyRunner(QtWidgets.QMainWindow):
         self.varActions = {
             'Save (Pickle)': self.interpreter.pickleVar,
             'Save as Text File': self.interpreter.saveTextFile,
-            'Delete': self.interpreter.delVar
+            'Delete': self.interpreter.delVar,
+            'Delete All': self.interpreter.delAllVars
         }
 
         # these take fileinfo object as arg
@@ -143,6 +144,8 @@ class PyRunner(QtWidgets.QMainWindow):
         self.ui.upDirectoryButton.clicked.connect(self._cdUp)
         self.ui.fileViewer.doubleClicked.connect(self.dblClickFcn)
         self.ui.currentFolder.editingFinished.connect(self.lineEditChanged)
+
+        self.ui.runButton.clicked.connect(self.attemptRunSelected)
 
         self.ui.varViewer.customContextMenuRequested.connect(self.varContextMenuFcn)
         self.ui.fileViewer.customContextMenuRequested.connect(self.fileContextMenuFcn)
@@ -248,6 +251,16 @@ class PyRunner(QtWidgets.QMainWindow):
 
     # ----------------------------------------
 
+    def attemptRunSelected(self):
+        selected = self.ui.fileViewer.currentIndex()
+        fileinfo = self.filemodel.fileInfo(selected)
+        if fileinfo.isDir() or not fileinfo.suffix() == 'py':
+            return -1
+        else:
+            self.runPythonFile(fileinfo)
+            self.fetchStatus()
+            return 0
+
     def lineEditChanged(self):
         trialFolder = QtCore.QFileInfo(self.ui.currentFolder.text())
         if trialFolder.isDir():
@@ -297,6 +310,7 @@ class PyRunner(QtWidgets.QMainWindow):
         for i, v in enumerate(vardicts):
             for j, elem in enumerate([v['name'], v['value'], v['type']]):
                 item = QtWidgets.QTableWidgetItem(elem)
+                item.setToolTip(elem)
                 # item.setFlags(QtCore.Qt.ItemIsSelectable)
                 self.ui.varViewer.setItem(i, j, item)
         self.ui.varViewer.sortItems(0)
