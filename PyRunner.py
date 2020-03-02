@@ -1,11 +1,39 @@
 import sys
 import os
 import re
+import subprocess
 from time import time
 
 from PyQt5 import QtCore, QtWidgets, uic, QtGui
 
 from interpreter import Interpreter
+
+STARTDIR = '~/Documents/PythonScripts'
+
+def customhook(errorclass, errorobj, traceback):
+    print('{0}: {1}'.format(errorclass.name, repr(errorobj)))
+    print(repr(traceback))
+
+sys.exceptionhook = customhook
+
+class StatusGetter(QtCore.QObject):
+    doneSignal = QtCore.pyqtSignal(dict)
+
+    def __init__(self, interpreter):
+        QtCore.QObject.__init__(self)
+        self.interpreter = interpreter
+
+    @QtCore.pyqtSlot()
+    def work(self):
+        # print('Thread doing work.')
+        vardicts = self.interpreter.variables()
+        wd = self.interpreter.workingDir()        
+
+        results = {
+            'vardicts': vardicts,
+            'wd': wd
+        }
+        self.doneSignal.emit(results)
 
 class PyRunner(QtWidgets.QMainWindow):
 
@@ -18,22 +46,23 @@ class PyRunner(QtWidgets.QMainWindow):
         QtCore.Qt.Key_Down
     ]
 
-    def __init__(self):
+    def __init__(self, parent):
         QtWidgets.QDialog.__init__(self)
 
+        self.parent = parent
         # get ui
         self.ui = uic.loadUi('mainwindow.ui')
-        self.ui.setWindowTitle('Python Runner')
+        self.ui.setWindowTitle('PyDE')
 
         self.directory = QtCore.QDir()
         # self.directory.setCurrent('/')
 
         self.filemodel = QtWidgets.QFileSystemModel()
-        self.filemodel.setNameFilters(['*.py', '*.pickle'])
+        # self.filemodel.setNameFilters(['*.py', '*.pickle'])
 
         self.ui.fileViewer.setModel(self.filemodel)
 
-        self.directory.setPath(os.path.expanduser('~'))
+        self.directory.setPath(os.path.expanduser(STARTDIR))
 
         self.folderCompleter = QtWidgets.QCompleter()
         self.folderCompleter.setCaseSensitivity(QtCore.Qt.CaseInsensitive)
@@ -41,15 +70,18 @@ class PyRunner(QtWidgets.QMainWindow):
         self.folderCompleter.setModel(self.filemodel)
         self.ui.currentFolder.setCompleter(self.folderCompleter)
 
-
         self.interpreter = Interpreter()
-        self.interpreter.silentImport('os')
-        self.interpreter.silentImport('pickle')
 
         self.ui.cmdWindow.appendPlainText(self.interpreter.startinfo)
 
-        self.history = ['']
-        self.histIndex = 0
+        self.statusWorker = StatusGetter(self.interpreter)
+        self.bkgThread = QtCore.QThread()
+        self.statusWorker.moveToThread(self.bkgThread)
+        self.statusWorker.doneSignal.connect(self.consumeStatus)
+        self.bkgThread.started.connect(self.statusWorker.work)
+
+        # self.history = ['']
+        # self.histIndex = 0
 
         self.ui.varViewer.setColumnCount(3)
         head = self.ui.varViewer.horizontalHeader()
@@ -57,9 +89,33 @@ class PyRunner(QtWidgets.QMainWindow):
         self.ui.varViewer.setHorizontalHeader(head)
         self.ui.varViewer.setHorizontalHeaderLabels(['Name', 'Value', 'Type'])
 
+        # these take variable name as arg
         self.varActions = {
-            'Save': self.saveVar,
-            'Delete': self.delVar
+            'Save (Pickle)': self.interpreter.pickleVar,
+            'Save as Text File': self.interpreter.saveTextFile,
+            'Delete': self.interpreter.delVar
+        }
+
+        # these take fileinfo object as arg
+        self.genFileActions = {
+            'Copy Path': self.copyFilePath,
+            'Import as Text': self.importText,
+            'Open Outisde': self.openFile
+        }
+        self.genDirActions = {
+            'Copy Path': self.copyFilePath,
+            'Open Outisde': self.openFile
+        }
+        self.fileExtActions  = {
+            '': {
+                'Open Directory': self.openFolder
+            },
+            'pickle': {
+                'Load Object': self.loadPickled
+            },
+            'py': {
+                'Run': self.runPythonFile
+            }
         }
         # saveVar = QtWidgets.QAction('Save', self)
         # self.ui.varViewer.insertAction(QtWidgets.QAction(), saveVar)
@@ -70,7 +126,9 @@ class PyRunner(QtWidgets.QMainWindow):
         # self.ui.fileViewer.setRootIndex(self.filemodel.index(self.directory.currentPath()))
         # self.ui.currentFolder.setText(self.filemodel.rootPath())
 
-        QtWidgets.qApp.processEvents()
+        self.clipboard = self.parent.clipboard()
+
+        self.parent.processEvents()
         
         self.resizeCols()
 
@@ -87,6 +145,7 @@ class PyRunner(QtWidgets.QMainWindow):
         self.ui.currentFolder.editingFinished.connect(self.lineEditChanged)
 
         self.ui.varViewer.customContextMenuRequested.connect(self.varContextMenuFcn)
+        self.ui.fileViewer.customContextMenuRequested.connect(self.fileContextMenuFcn)
         # remember what the callback was so it can be manually called
         self.keyFunction_builtin = self.ui.cmdWindow.keyPressEvent
         self.ui.cmdWindow.keyPressEvent = self.keyFilter
@@ -104,13 +163,12 @@ class PyRunner(QtWidgets.QMainWindow):
         return
 
     def resizeWindow(self, screenFraction):
-        desktop = QtWidgets.QDesktopWidget()
+        desktop = self.parent.desktop()
         geom = self.ui.geometry()
         geom.setWidth(int(screenFraction[0] * desktop.geometry().width()))
         geom.setHeight(int(screenFraction[1] * desktop.geometry().height()))
         geom.moveCenter(desktop.geometry().center())
         self.ui.setGeometry(geom)
-
 
     def _cdUp(self):
         if self.directory.cdUp():
@@ -125,15 +183,6 @@ class PyRunner(QtWidgets.QMainWindow):
         if clickedFile.isDir():
             self._cdFolder(clickedFile.filePath())
 
-    def saveVar(self, varname):
-        self.interpreter.command("f = open('{}.pickle', 'wb')".format(varname))
-        self.interpreter.command("_pickle.dump({}, f)".format(varname))
-        self.interpreter.command("f.close(); del f")
-
-    def delVar(self, varname):
-        self.interpreter.command("del {}".format(varname))
-        self.updateLocals()
-
     def varContextMenuFcn(self, point):
         item = self.ui.varViewer.itemAt(point)
         if item is not None:
@@ -144,6 +193,60 @@ class PyRunner(QtWidgets.QMainWindow):
             if action is not None:
                 fcn = self.varActions[action.text()]
                 fcn(self.ui.varViewer.item(item.row(), 0).text())
+                self.fetchStatus()
+
+    def fileContextMenuFcn(self, point):
+        index = self.ui.fileViewer.indexAt(point)
+        fileInfo = self.filemodel.fileInfo(index)
+        # infoDict = {
+        #     'Name': fileInfo.fileName(),
+        #     'Path': fileInfo.filePath(),
+        #     'IsDir': fileInfo.isDir(),
+        #     'Suffix': fileInfo.suffix()
+        # }
+        suffix = fileInfo.suffix()
+        if fileInfo.isDir():
+            actions  = self.genDirActions.copy()
+        else:
+            actions  = self.genFileActions.copy()
+        actions.update(self.fileExtActions.get(suffix, {}))
+        menu = QtWidgets.QMenu(self)
+        for name in list(actions):
+            menu.addAction(name)
+        choice = menu.exec_(self.ui.fileViewer.viewport().mapToGlobal(point))
+        if choice is not None:
+            fcn = actions[choice.text()]
+            fcn(fileInfo)
+            self.fetchStatus()
+
+    def copyFilePath(self, fileinfo):
+        self.clipboard.setText(fileinfo.filePath(), mode=self.clipboard.Clipboard)
+
+    def openFolder(self, fileinfo):
+        if fileinfo.isDir():
+            self._cdFolder(fileinfo.filePath())
+
+    def loadPickled(self, fileinfo):
+        abspath = fileinfo.absoluteFilePath()
+        self.interpreter.unpickleVar(abspath)
+
+    def importText(self, fileinfo):
+        abspath = fileinfo.absoluteFilePath()
+        self.interpreter.loadTextFile(abspath)
+
+    def openFile(self, fileinfo):
+        abspath = fileinfo.absoluteFilePath()
+        p = subprocess.run(['open', abspath], capture_output=True)
+        errmsg = p.stderr.decode()
+
+    def runPythonFile(self, fileinfo):
+        abspath = fileinfo.absoluteFilePath()
+        resp = self.interpreter.runFile(abspath)
+        if len(resp) > 0:
+            self.ui.cmdWindow.appendPlainText(resp)
+        self.promptCmd()
+
+    # ----------------------------------------
 
     def lineEditChanged(self):
         trialFolder = QtCore.QFileInfo(self.ui.currentFolder.text())
@@ -161,27 +264,35 @@ class PyRunner(QtWidgets.QMainWindow):
         self.ui.fileViewer.setRootIndex(self.filemodel.index(self.directory.path()))
         self.ui.currentFolder.setText(self.filemodel.rootPath())
 
-        r = self.interpreter.command("_os.chdir('{}')".format(self.directory.path()))
-
-    # def printCmd(self, text):
-    #     self.ui.cmdWindow.insertPlainText(text)
+        self.interpreter.changeDir(self.directory.path())
 
     def promptCmd(self):
         self.ui.cmdWindow.appendPlainText(self.interpreter.nextprompt)
         self.ui.cmdWindow.moveCursor(QtGui.QTextCursor.End)
 
     def sendCommand(self, command):
-        self.logCommand(command)
-        self.histIndex = 0
         response = self.interpreter.command(command)
+        # if not self.interpreter.running:
+        #     sys.exit()
+
         if len(response) > 0:
             self.ui.cmdWindow.appendPlainText(response)
-        if self.interpreter.newPrompt():
-            self.updateLocals()
-            self.checkDir()
+        if self.interpreter.promptIsNew(): # only after block completes
+            self.fetchStatus()
+            # self.checkDir()
 
-    def updateLocals(self):
-        vardicts = self.interpreter.variables()
+    def fetchStatus(self):
+        self.bkgThread.start()
+
+    @QtCore.pyqtSlot(dict)
+    def consumeStatus(self, status: dict):
+        # print(status)
+        self.bkgThread.quit()
+        self.updateLocals(status['vardicts'])
+        self.checkDir(status['wd'])
+
+    def updateLocals(self, vardicts):
+        # vardicts = self.interpreter.variables()
         self.ui.varViewer.setRowCount(len(vardicts))
         for i, v in enumerate(vardicts):
             for j, elem in enumerate([v['name'], v['value'], v['type']]):
@@ -190,15 +301,13 @@ class PyRunner(QtWidgets.QMainWindow):
                 self.ui.varViewer.setItem(i, j, item)
         self.ui.varViewer.sortItems(0)
 
-    def checkDir(self):
-        wdir = self.interpreter.command('print(_os.getcwd())')
-        if not wdir == self.directory.path():
-            self._cdFolder(wdir)
+    def checkDir(self, cwd):
+        if not cwd == self.directory.path():
+            self._cdFolder(cwd)
 
     def getCommand(self):
         lastline = self.ui.cmdWindow.toPlainText().split(os.linesep)[-1]
         command = lastline[len(self.interpreter.PROMPT):]
-        # print('Got command: "{}"'.format(command))
         return command
 
     def setCommand(self, command):
@@ -206,9 +315,6 @@ class PyRunner(QtWidgets.QMainWindow):
         allTextLines[-1] = allTextLines[-1][:len(self.interpreter.PROMPT)] + command
         self.ui.cmdWindow.setPlainText(os.linesep.join(allTextLines))
         self.cursorToEnd()
-
-    def logCommand(self, command):
-        self.history.insert(1, command)
 
     def cursorToEnd(self):
         cursor = self.ui.cmdWindow.textCursor()
@@ -226,10 +332,10 @@ class PyRunner(QtWidgets.QMainWindow):
             self.keyFunction_builtin(event)
         elif event.key() in self.UP_DOWN:
             if event.key() == QtCore.Qt.Key_Up:
-                self.histIndex = min(self.histIndex + 1, len(self.history) - 1)
+                self.interpreter.histBack()
             elif event.key() == QtCore.Qt.Key_Down:
-                self.histIndex = max(self.histIndex - 1, 0)
-            self.setCommand(self.history[self.histIndex])
+                self.interpreter.histFwd()
+            self.setCommand(self.interpreter.getHistoryCommand())
         else: # trying to enter text!
             cursor = self.ui.cmdWindow.textCursor()
             Nblocks = self.ui.cmdWindow.blockCount()
@@ -239,16 +345,10 @@ class PyRunner(QtWidgets.QMainWindow):
                 else:
                     self.keyFunction_builtin(event)
 
-            
-
-        
-
-        
-
 
 
 app = QtWidgets.QApplication(sys.argv)
-runner = PyRunner()
+runner = PyRunner(app)
 
 if __name__ == '__main__':
     'Executing app.'
